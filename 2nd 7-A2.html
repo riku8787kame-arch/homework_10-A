@@ -1,0 +1,189 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>7-5′ Platform Landing</title>
+<canvas id="cv" width="640" height="360" style="background:#0e1528"></canvas>
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+// ── オブジェクト ─────────────────────────
+const player = { x: 80, y: 260, w: 28, h: 36 };
+const floor  = { x: 0,  y: 320, w: 640, h: 40 };
+const plat   = { x: 450, y: 240, w: 160, h: 16 }; // 浮遊足場
+
+// ─ 動く足場 ─
+const plat2 = { x: 100, y: 150, w: 100, h: 16, vx: 100, dir: 1 };
+// ─ トラップオブジェクト ─ // ★追加
+const trap   = { x:160, y:280, w:250, h:16, color:'#f65b6a' }; // プレイヤーが進む方向とは真反対に動く
+
+
+// ── 物理パラメータ ────────────────────────
+let vx = 0    // 横方向の移動速度
+let vy = 0;
+const speed = 240;   // 地上での移動速度(px/s)
+const jump  = 700;   // ジャンプ初速(px/s)
+const g     = 2000;  // 重力加速度(px/s^2)
+const bounce = 1.1;
+const impact = 250;
+let isGrounded = false;
+
+
+// ── 入力 ──────────────────────────────────
+const keys = {};
+addEventListener('keydown', e => keys[e.key] = true);   // イベントリスナ、第2引数はアロー関数
+addEventListener('keyup',   e => keys[e.key] = false);  // イベントリスナ、第２引数はアロー関数
+addEventListener('keydown', e=>{
+  // 地上にいるときだけジャンプ
+  if (e.code === 'Space' && isGrounded) vy = -jump;     // パラメータを使用
+});
+
+// ── 当たり判定ユーティリティ（AABB） ──────
+function aabb(r1, r2) {
+  return (r1.x < r2.x + r2.w && r1.x + r1.w > r2.x &&
+          r1.y < r2.y + r2.h && r1.y + r1.h > r2.y);
+}
+
+// ── 衝突処理：床 ──────────────────────────
+function collideWithFloor() {
+  const bottom = player.y + player.h;
+  if (bottom > floor.y) {
+    player.y = floor.y - player.h; // 吸着
+    vy = 0;
+    isGrounded = true;
+  }
+}
+
+// ── 衝突処理：浮遊足場（上からのみ着地） ──
+function collideWithPlatform(dt) {
+  // 今フレームの矩形
+  const pNow = { x: player.x, y: player.y, w: player.w, h: player.h };
+  if (!aabb(pNow, plat)) return; // そもそも重なっていない
+
+  // 前フレームの“底”が足場の上面より上にあったなら「上から来た」とみなす
+  const prevBottom = (player.y - vy * dt) + player.h;
+  const platformTop = plat.y;
+
+  if (prevBottom <= platformTop && vy >= 0) {
+    // 上から着地
+    player.y = platformTop - player.h; // 吸着
+    vy = 0;
+    isGrounded = true;
+  } else {
+    // 横や下から来た場合は「乗れない」簡易仕様：今回は処理しない（すり抜け）
+    // 発展：横からのめり込み解除や天井衝突を入れると完成度が上がる
+  }
+}
+
+// ── 移動処理：動く足場 ────────────────
+function movePlatform2(dt) {
+  plat2.x += plat2.vx * plat2.dir * dt;
+  if (plat2.x < 50 || plat2.x + plat2.w > 590) plat2.dir *= -1;
+}
+
+// ── 衝突処理：動く足場 ────────────────
+function collideWithPlatform2(dt){
+  if (!aabb(player, plat2)) return;
+  const prevBottom = (player.y - vy*dt) + player.h;
+  if (prevBottom <= plat2.y && vy >= 0){
+    // 上から着地＆足場と一緒に動く
+    player.y = plat2.y - player.h;
+    vy = 0;
+    isGrounded = true;
+    player.x += plat2.vx * plat2.dir * dt; // 乗っている間は運ばれる
+  }
+}
+
+// ── 位置更新 ──────────────────────────────────
+function update(dt){
+  // 入力 → 水平方向速度（簡略：即時切替）
+  vx = 0;
+  if (keys['ArrowLeft'])  vx = -speed;
+  if (keys['ArrowRight']) vx =  speed;
+  
+  player.x += vx * dt;
+  vy += g * dt;            // 重力で速度が増える
+  player.y += vy * dt;     // 位置更新
+
+  // 衝突判定（毎フレーム isGrounded をリセットしてから判定）
+  isGrounded = false;
+
+  collideWithFloor();
+  collideWithPlatform(dt);
+  collideWithPlatform2(dt);
+  movePlatform2(dt);
+  checkTrap(dt);    // ★追加
+}
+
+// ── 衝突処理：トラップ ────────────────// ★追加
+/*跳ね返りを表現するには？
+１，着地して跳ね返る
+２，高く飛ぶ
+３，また床に着地する（１～３の繰り返し)*/
+function checkTrap(dt) {
+
+  // 1. まず AABB で重なっているか判定
+  if (!aabb(player, trap)) return;
+
+  const prevBottom = (player.y - vy * dt) + player.h; // 前フレームでの底
+  const trapTop = trap.y;
+
+  // 2. 「前フレームでは trap より上」かつ「今は重なっている」→上から踏んだ
+  if (prevBottom <= trapTop && vy >= 0) {
+
+    // ★ 位置吸着（すり抜け防止）
+    player.y = trapTop - player.h;
+
+    // ★ 跳ね返り判定
+    if (Math.abs(vy) > impact) {
+      vy = -vy * bounce;      // 強いバウンド
+    } else {
+      vy = -jump * 0.8;       // 軽めのバウンド
+    }
+
+    // トランポリンなので「地面扱い」にはしない
+    isGrounded = false;
+  }
+}
+
+
+// ── 描画 ──────────────────────────────────
+function draw() {
+  ctx.clearRect(0,0,cv.width,cv.height);
+
+  // 床
+  ctx.fillStyle = '#203060';
+  ctx.fillRect(floor.x, floor.y, floor.w, floor.h);
+
+  // 浮遊足場
+  ctx.fillStyle = '#2e446e';
+  ctx.fillRect(plat.x, plat.y, plat.w, plat.h);
+
+  // 動く足場
+  ctx.fillStyle='#4468cc';
+  ctx.fillRect(plat2.x, plat2.y, plat2.w, plat2.h);
+
+  // trap  ★：追加
+  ctx.fillStyle=trap.color;
+  ctx.fillRect(trap.x, trap.y, trap.w, trap.h);
+
+  // プレイヤー（地上:水色／空中:黄）
+  ctx.fillStyle = isGrounded ? '#7ef5e1' : '#ffd166';
+  ctx.fillRect(player.x, player.y, player.w, player.h);
+
+  // HUD
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = '12px ui-monospace,monospace';
+  ctx.fillText(`vy=${vy.toFixed(1)} grounded=${isGrounded}`, 8, 16);
+}
+
+// ── ループ ─────────────────────────────────
+let last = performance.now();
+function loop(now) {
+  const dt = (now - last) / 1000; last = now;
+
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
